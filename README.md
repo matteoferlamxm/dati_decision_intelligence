@@ -1,140 +1,139 @@
-# Estrazione tabelle da Coda
+# Coda table export
 
-Script Python locale che, dato un **link** copiato dal browser (Coda /
-Superhuman Docs) e la tua **API key**, scarica in CSV la tabella a cui il
-link punta, oppure tutte le tabelle della pagina a cui punta.
+Local Python scripts that, given a **link** copied from the browser (Coda /
+Superhuman Docs) and your **API key**, download to CSV the table the link
+points to, or all the tables of the page the link points to.
 
-Tutto funziona sul tuo computer: l'unica comunicazione esterna sono le
-chiamate dirette alle API ufficiali di Coda (`https://coda.io/apis/v1`).
+Everything runs on your computer: the only external communication is the
+direct calls to the official Coda API (`https://coda.io/apis/v1`).
 
-## Struttura del progetto
+## Project structure
 
 ```
 dati_decision_intelligence/
-├── .env.example       # Template di configurazione (nessun segreto)
-├── .env               # La TUA API key (da creare, NON versionato)
+├── .env.example       # Configuration template (no secrets)
+├── .env               # YOUR API key (to be created, NOT versioned)
 ├── .gitignore
-├── requirements.txt   # Dipendenze Python
-├── coda_export_v1.py  # Export standard: celle scritte come arrivano dall'API
-├── coda_export_v2.py  # Export con celle appiattite su una sola riga di testo
-├── output/            # CSV generati
+├── requirements.txt   # Python dependencies
+├── coda_export_v1.py  # Standard export: cells written as returned by the API
+├── coda_export_v2.py  # Export with cells flattened to a single line of text
+├── output/            # Generated CSV files
 └── README.md
 ```
 
-I due script hanno la stessa interfaccia e differiscono solo nel
-trattamento delle celle (vedi [Quale script usare](#quale-script-usare)).
+The two scripts share the same interface and only differ in how they handle
+cell contents (see [Which script to use](#which-script-to-use)).
 
-## Requisiti
+## Requirements
 
-- **Python 3.10+** (verificato con Python 3.15.2)
-- Un account Coda / Superhuman Docs con accesso al documento da esportare
+- **Python 3.10+** (tested with Python 3.15.2)
+- A Coda / Superhuman Docs account with access to the document to export
 
 ## Setup
 
 ```bash
 cd /Users/matteo.ferlal/Desktop/dati_decision_intelligence
 
-# Virtual environment e dipendenze
+# Virtual environment and dependencies
 python3.15 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# Configurazione
+# Configuration
 cp .env.example .env
 ```
 
-### Ottenere la API key
+### Getting the API key
 
-1. Vai su [coda.io](https://coda.io) e accedi.
-2. Icona profilo in alto a destra → **Account Settings**.
-3. In **API Settings** clicca su **Generate API token**.
-4. Incolla il token in `.env`:
+1. Go to [coda.io](https://coda.io) and sign in.
+2. Profile icon in the top right → **Account Settings**.
+3. Under **API Settings**, click **Generate API token**.
+4. Paste the token into `.env`:
 
 ```env
-CODA_API_KEY=il_tuo_token_api_qui
+CODA_API_KEY=your_api_token_here
 ```
 
-⚠️ Il token ha gli stessi permessi del tuo utente: non condividerlo e non
-committarlo su Git. `.env` è escluso da Git tramite `.gitignore`.
+⚠️ The token has the same permissions as your user: do not share it and do
+not commit it to Git. `.env` is excluded from Git via `.gitignore`.
 
-## Uso
+## Usage
 
 ```bash
 python coda_export_v2.py "<link>"
 ```
 
-Esempio con il link di una tabella (copiato dal browser, con l'ancora
-`#Nome-Tabella_tuXXXX`):
+Example with the link of a table (copied from the browser, including the
+`#Table-Name_tuXXXX` anchor):
 
 ```bash
-python coda_export_v2.py "https://docs.superhuman.com/d/_dAbCDeFGH/Pagina_suXYZ#Nome-Tabella_tuWXYZ12"
+python coda_export_v2.py "https://docs.superhuman.com/d/_dAbCDeFGH/Page_suXYZ#Table-Name_tuWXYZ12"
 ```
 
-Lo script risolve il link e sceglie da solo cosa fare:
+The script resolves the link and decides by itself what to do:
 
-| Il link punta a… | Cosa succede |
+| The link points to… | What happens |
 |---|---|
-| **Una tabella** | Esporta quella tabella in `output/<nome_tabella>_<timestamp>.csv`. |
-| **Una pagina** | Esporta tutte le sue tabelle (`table` e `view`) in `output/<nome_pagina>/`. Le sottopagine non sono incluse. |
-| **Altro** (es. il doc intero) | Si ferma con un messaggio di errore. |
+| **A table** | Exports that table to `output/<table_name>_<timestamp>.csv`. |
+| **A page** | Exports all its tables (`table` and `view`) to `output/<page_name>/`. Subpages are not included. |
+| **Anything else** (e.g. the whole doc) | Stops with an error message. |
 
-Unica opzione: `--output-dir CARTELLA` (default `./output`).
+The only option is `--output-dir FOLDER` (default `./output`).
 
-Se due tabelle hanno lo stesso nome, all'interno dello stesso export viene
-aggiunto l'ID della tabella al nome del file, così non si sovrascrivono.
+If two tables have the same name within the same export, the table ID is
+appended to the file name so that they do not overwrite each other.
 
-## Quale script usare
+## Which script to use
 
 | | `coda_export_v1.py` | `coda_export_v2.py` |
 |---|---|---|
-| Celle con testo multi-riga | scritte con gli "a capo" originali | appiattite su una riga |
-| Liste (multi-select, lookup) | scritte come lista Python | unite con `; ` |
-| Oggetti (persona, allegato, riferimento) | scritti come dizionario Python | ridotti a nome/email/url |
+| Cells with multi-line text | written with the original line breaks | flattened to one line |
+| Lists (multi-select, lookup) | written as a Python list | joined with `; ` |
+| Objects (person, attachment, reference) | written as a Python dict | reduced to name/email/url |
 
-Con `v2` ogni riga della tabella occupa una sola riga di testo nel CSV,
-quindi il file resta leggibile anche aperto come testo semplice. Esempio:
+With `v2` each table row takes up a single line of text in the CSV, so the
+file stays readable even when opened as plain text. Example:
 
-| Su Coda | `v1` | `v2` |
+| On Coda | `v1` | `v2` |
 |---|---|---|
-| `- primo punto`<br>`- secondo punto` | stesso testo su due righe | `- primo punto; - secondo punto` |
-| multi-select `Opzione A`, `Opzione B` | `['Opzione A', 'Opzione B']` | `Opzione A; Opzione B` |
+| `- first point`<br>`- second point` | same text on two lines | `- first point; - second point` |
+| multi-select `Option A`, `Option B` | `['Option A', 'Option B']` | `Option A; Option B` |
 
-Con `v2`, se una riga termina con `:` il testo successivo viene attaccato
-con uno spazio invece del separatore (`Categoria: voce1; voce2`). Con
-entrambi gli script, pandas racchiude tra virgolette i campi che
-contengono virgole o "a capo", quindi la struttura delle colonne resta
-corretta per Excel, Google Sheets o pandas.
+With `v2`, if a line ends with `:` the following text is attached with a
+space instead of the separator (`Category: item1; item2`). With both
+scripts, pandas wraps in quotes the fields that contain commas or line
+breaks, so the column structure stays correct for Excel, Google Sheets or
+pandas.
 
-## Dettagli tecnici
+## Technical details
 
-- **Risoluzione del link**: `GET /resolveBrowserLink` restituisce tipo, ID
-  e nome della risorsa; l'ID del documento si ricava dall'`href` della
-  risposta. Non servono ID di doc o di tabella nel `.env`.
-- **Tabelle di una pagina**: l'API non ha un filtro per pagina. Lo script
-  elenca le tabelle del doc e tiene quelle il cui campo `parent` è la
-  pagina; se `parent` manca nell'elenco, lo legge dal dettaglio della
-  tabella.
-- **Autenticazione**: header `Authorization: Bearer <CODA_API_KEY>`.
-- **Paginazione**: segue `nextPageLink` sia per le righe sia per l'elenco
-  delle tabelle.
-- **Rate limiting**: su `429` e `5xx` riprova con backoff esponenziale
-  (rispettando `Retry-After`), fino a 5 tentativi.
-- **Colonne**: le righe sono scaricate con `useColumnNames=true`, quindi
-  il CSV ha i nomi leggibili delle colonne. In fondo vengono aggiunte
-  `_coda_row_id` (ID stabile della riga su Coda) e `_coda_row_index`
-  (posizione della riga al momento dell'export).
-- **Encoding CSV**: `utf-8-sig`, apribile direttamente in Excel con
-  caratteri accentati.
+- **Link resolution**: `GET /resolveBrowserLink` returns the type, ID and
+  name of the resource; the document ID is taken from the `href` of the
+  response. No doc or table IDs are needed in `.env`.
+- **Tables of a page**: the API has no per-page filter. The script lists
+  the tables of the doc and keeps those whose `parent` field is the page;
+  if `parent` is missing from the list, it reads it from the table detail.
+- **Authentication**: `Authorization: Bearer <CODA_API_KEY>` header.
+- **Pagination**: follows `nextPageLink` both for rows and for the list of
+  tables.
+- **Rate limiting**: on `429` and `5xx` it retries with exponential backoff
+  (honoring `Retry-After`), up to 5 attempts.
+- **Columns**: rows are downloaded with `useColumnNames=true`, so the CSV
+  has the readable column names. Two columns are appended at the end:
+  `_coda_row_id` (stable row ID on Coda) and `_coda_row_index` (position of
+  the row at export time).
+- **CSV encoding**: `utf-8-sig`, can be opened directly in Excel with
+  accented characters.
 
-## Risoluzione problemi
+## Troubleshooting
 
-- **"File .env non trovato"** → copia `.env.example` in `.env` e inserisci
-  la API key.
-- **Errore 401/403** → token non valido o senza accesso al documento.
-- **Errore 404 sulla risoluzione del link** → il token non ha accesso al
-  doc, oppure il link è stato copiato in modo incompleto.
-- **"Il link punta a una risorsa di tipo '…'"** → usa il link di una
-  tabella (con l'ancora `#Nome-Tabella_tuXXXX`) o di una pagina, non quello
-  del documento intero.
-- **Errori 429 ripetuti** → troppe chiamate ravvicinate: lo script già
-  riprova da solo; se persiste, attendi qualche minuto.
+- **".env file not found"** → copy `.env.example` to `.env` and enter the
+  API key.
+- **401/403 error** → invalid token, or no access to the document.
+- **404 error while resolving the link** → the token has no access to the
+  doc, or the link was copied incompletely.
+- **"The link points to a resource of type '…'"** → use the link of a
+  table (with the `#Table-Name_tuXXXX` anchor) or of a page, not the one of
+  the whole document.
+- **Repeated 429 errors** → too many calls in a short time: the script
+  already retries on its own; if it persists, wait a few minutes.

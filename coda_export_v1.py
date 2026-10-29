@@ -1,24 +1,20 @@
-#!/usr/bin/env python3
 """
-coda_export_v1.py
-=================
+Given a link copied from the browser (Superhuman Docs / Coda), exports to
+CSV the table it points to, or all the tables of the page it points to.
 
-Dato un link copiato dal browser (Superhuman Docs / Coda), esporta in CSV
-la tabella a cui punta, oppure tutte le tabelle della pagina a cui punta.
+"Standard" variant: cell contents are NOT modified. Every value returned by
+the API goes to pandas.to_csv as is (embedded newlines, lists and dicts
+included). For a CSV with a single line of text per table row use
+coda_export_v2.py.
 
-Variante "standard": il contenuto delle celle NON viene modificato. Ogni
-valore restituito dall'API va a pandas.to_csv così com'è (newline interni,
-liste e dizionari compresi). Per un CSV con una sola riga di testo per
-ogni riga di tabella usa coda_export_v2.py.
+Only CODA_API_KEY is needed in the .env file (see .env.example).
 
-Nel file .env serve solo CODA_API_KEY (vedi .env.example).
+Usage:
+    python coda_export_v1.py "<link>" [--output-dir FOLDER]
 
-Uso:
-    python coda_export_v1.py "<link>" [--output-dir CARTELLA]
-
-Il link può puntare a:
-    - una tabella (con l'ancora #Nome-Tabella_tuXXXX) -> esporta quella tabella
-    - una pagina                                      -> esporta tutte le sue tabelle
+The link can point to:
+    - a table (with the #Table-Name_tuXXXX anchor) -> exports that table
+    - a page                                       -> exports all its tables
 """
 
 from __future__ import annotations
@@ -53,16 +49,16 @@ logger = logging.getLogger("coda_export_v1")
 
 
 class CodaApiError(Exception):
-    """Errore nelle chiamate verso l'API Coda."""
+    """Error in calls to the Coda API."""
 
 
 def load_api_key() -> str:
-    """Legge CODA_API_KEY dal file .env nella cartella dello script."""
+    """Read CODA_API_KEY from the .env file in the script's folder."""
     env_path = Path(__file__).resolve().parent / ".env"
     if not env_path.exists():
         logger.error(
-            "File .env non trovato in %s. Copia .env.example in .env e "
-            "inserisci CODA_API_KEY.",
+            ".env file not found in %s. Copy .env.example to .env and "
+            "set CODA_API_KEY.",
             env_path,
         )
         sys.exit(1)
@@ -70,7 +66,7 @@ def load_api_key() -> str:
     load_dotenv(dotenv_path=env_path)
     api_key = os.getenv("CODA_API_KEY", "").strip()
     if not api_key:
-        logger.error("CODA_API_KEY non impostata nel file .env.")
+        logger.error("CODA_API_KEY is not set in the .env file.")
         sys.exit(1)
     return api_key
 
@@ -86,7 +82,7 @@ def build_session(api_key: str) -> requests.Session:
 def request_with_retry(
     session: requests.Session, method: str, url: str, **kwargs: Any
 ) -> requests.Response:
-    """Esegue la richiesta con backoff esponenziale su 429 (rate limit) e 5xx."""
+    """Perform the request with exponential backoff on 429 (rate limit) and 5xx."""
     backoff = INITIAL_BACKOFF_SECONDS
     for attempt in range(1, MAX_RETRIES + 1):
         response = session.request(method, url, timeout=30, **kwargs)
@@ -95,7 +91,7 @@ def request_with_retry(
             retry_after = response.headers.get("Retry-After")
             wait_seconds = float(retry_after) if retry_after else backoff
             logger.warning(
-                "Rate limit (429). Attesa di %.1f s (tentativo %d/%d)...",
+                "Rate limit (429). Waiting %.1f s (attempt %d/%d)...",
                 wait_seconds,
                 attempt,
                 MAX_RETRIES,
@@ -103,7 +99,7 @@ def request_with_retry(
         elif response.status_code >= 500:
             wait_seconds = backoff
             logger.warning(
-                "Errore server (%d). Nuovo tentativo tra %.1f s (%d/%d)...",
+                "Server error (%d). Retrying in %.1f s (%d/%d)...",
                 response.status_code,
                 wait_seconds,
                 attempt,
@@ -116,14 +112,14 @@ def request_with_retry(
         backoff *= 2
 
     raise CodaApiError(
-        f"Numero massimo di tentativi ({MAX_RETRIES}) raggiunto per {url}."
+        f"Maximum number of attempts ({MAX_RETRIES}) reached for {url}."
     )
 
 
 def get_json(
     session: requests.Session, url: str, error_label: str, **kwargs: Any
 ) -> dict[str, Any]:
-    """GET con gestione errori uniforme; restituisce il JSON della risposta."""
+    """GET with uniform error handling; returns the response JSON."""
     response = request_with_retry(session, "GET", url, **kwargs)
     if response.status_code != 200:
         raise CodaApiError(
@@ -136,22 +132,22 @@ def resolve_target(
     session: requests.Session, browser_url: str
 ) -> tuple[str, str, dict[str, Any]]:
     """
-    Risolve il link del browser tramite GET /resolveBrowserLink.
-    Restituisce (doc_id, tipo_risorsa, risorsa). La risposta ha la forma
-    {"resource": {"type", "id", "name", "href"}}; il doc ID si ricava
-    dall'href API della risorsa (.../docs/<docId>/...).
+    Resolve the browser link via GET /resolveBrowserLink.
+    Returns (doc_id, resource_type, resource). The response has the shape
+    {"resource": {"type", "id", "name", "href"}}; the doc ID is taken from
+    the resource's API href (.../docs/<docId>/...).
     """
     payload = get_json(
         session,
         f"{API_BASE_URL}/resolveBrowserLink",
-        "Errore nella risoluzione del link",
+        "Error resolving the link",
         params={"url": browser_url},
     )
     resource = payload.get("resource") or {}
     match = re.search(r"/docs/([^/?#]+)", resource.get("href", ""))
     if not resource.get("id") or not match:
         raise CodaApiError(
-            f"Risposta inattesa da resolveBrowserLink: {payload}"
+            f"Unexpected response from resolveBrowserLink: {payload}"
         )
     return match.group(1), resource.get("type", ""), resource
 
@@ -161,7 +157,7 @@ def get_table_details(
 ) -> dict[str, Any]:
     url = f"{API_BASE_URL}/docs/{doc_id}/tables/{quote(table_id, safe='')}"
     return get_json(
-        session, url, f"Errore nel recupero della tabella '{table_id}'"
+        session, url, f"Error fetching table '{table_id}'"
     )
 
 
@@ -169,10 +165,10 @@ def list_page_tables(
     session: requests.Session, doc_id: str, page_id: str
 ) -> list[dict[str, Any]]:
     """
-    Tabelle (e view) che appartengono alla pagina. L'API non ha un filtro per
-    pagina: si elencano le tabelle del doc (con paginazione) e si tengono
-    quelle con parent.id == page_id. Il campo `parent` non è garantito
-    nell'elenco: se manca lo si legge dal dettaglio della tabella.
+    Tables (and views) that belong to the page. The API has no per-page
+    filter: list the doc's tables (paginated) and keep those with
+    parent.id == page_id. The `parent` field is not guaranteed in the list:
+    if it is missing, read it from the table detail.
     """
     tables: list[dict[str, Any]] = []
     url = f"{API_BASE_URL}/docs/{doc_id}/tables"
@@ -180,7 +176,7 @@ def list_page_tables(
 
     while url:
         payload = get_json(
-            session, url, "Errore nel recupero delle tabelle", params=params
+            session, url, "Error fetching tables", params=params
         )
         for table in payload.get("items", []):
             parent = table.get("parent")
@@ -190,7 +186,7 @@ def list_page_tables(
                 )
             if (parent or {}).get("id") == page_id:
                 tables.append(table)
-        # nextPageLink contiene già tutti i parametri (incluso pageToken)
+        # nextPageLink already contains all the parameters (including pageToken)
         url = payload.get("nextPageLink")
         params = None
 
@@ -200,7 +196,7 @@ def list_page_tables(
 def fetch_table_rows(
     session: requests.Session, doc_id: str, table_id: str
 ) -> list[dict[str, Any]]:
-    """Scarica tutte le righe di una tabella seguendo la paginazione."""
+    """Download all the rows of a table following pagination."""
     rows: list[dict[str, Any]] = []
     url: str | None = (
         f"{API_BASE_URL}/docs/{doc_id}/tables/{quote(table_id, safe='')}/rows"
@@ -214,12 +210,12 @@ def fetch_table_rows(
     page_number = 1
     while url:
         payload = get_json(
-            session, url, "Errore nel recupero delle righe", params=params
+            session, url, "Error fetching rows", params=params
         )
         items = payload.get("items", [])
         rows.extend(items)
         logger.info(
-            "  pagina %d: %d righe scaricate (totale: %d)",
+            "  page %d: %d rows downloaded (total: %d)",
             page_number,
             len(items),
             len(rows),
@@ -233,9 +229,9 @@ def fetch_table_rows(
 
 def rows_to_dataframe(rows: Iterable[dict[str, Any]]) -> pd.DataFrame:
     """
-    Righe Coda -> DataFrame, con i metadati _coda_row_* in fondo.
-    Nessuna normalizzazione: i valori (anche liste o dizionari) vanno a
-    pandas così come arrivano dall'API, e sarà to_csv a scriverli.
+    Coda rows -> DataFrame, with the _coda_row_* metadata columns at the end.
+    No normalization: values (including lists or dicts) go to pandas as they
+    come from the API, and to_csv decides how to write them.
     """
     records = []
     for row in rows:
@@ -253,7 +249,7 @@ def rows_to_dataframe(rows: Iterable[dict[str, Any]]) -> pd.DataFrame:
 
 
 def safe_name(label: str) -> str:
-    """Rende un'etichetta utilizzabile come nome di file/cartella."""
+    """Make a label usable as a file/folder name."""
     return "".join(
         c if c.isalnum() or c in ("-", "_") else "_" for c in label
     ).strip("_")
@@ -267,9 +263,9 @@ def export_table_to_csv(
     used_names: set[Path],
 ) -> Path:
     """
-    Salva il DataFrame in <output_dir>/<nome_tabella>_<timestamp>.csv.
-    Se nella stessa esecuzione c'è già una tabella con lo stesso nome,
-    aggiunge l'ID per non sovrascrivere il file.
+    Save the DataFrame to <output_dir>/<table_name>_<timestamp>.csv.
+    If a table with the same name was already saved in this run, append the
+    ID so the file is not overwritten.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -291,31 +287,31 @@ def export_tables(
     output_dir: Path,
 ) -> int:
     """
-    Scarica e salva in CSV le tabelle indicate (dict con almeno id e name).
-    Restituisce 0 se tutto è andato bene, 1 se almeno una tabella è fallita.
+    Download and save to CSV the given tables (dicts with at least id and
+    name). Returns 0 if everything went well, 1 if at least one table failed.
     """
     exit_code = 0
     used_names: set[Path] = set()
     for table in tables:
         name = table.get("name") or table["id"]
-        logger.info("Esportazione tabella '%s' (%s)...", name, table["id"])
+        logger.info("Exporting table '%s' (%s)...", name, table["id"])
         try:
             rows = fetch_table_rows(session, doc_id, table["id"])
         except CodaApiError as exc:
-            logger.error("Errore nell'esportazione di '%s': %s", name, exc)
+            logger.error("Error exporting '%s': %s", name, exc)
             exit_code = 1
             continue
 
         df = rows_to_dataframe(rows)
         if df.empty:
-            logger.warning("La tabella '%s' non contiene righe: CSV non creato.", name)
+            logger.warning("Table '%s' has no rows: CSV not created.", name)
             continue
 
         file_path = export_table_to_csv(
             df, name, table["id"], table.get("output_dir", output_dir), used_names
         )
         logger.info(
-            "Tabella '%s' esportata: %d righe, %d colonne -> %s",
+            "Table '%s' exported: %d rows, %d columns -> %s",
             name,
             len(df),
             len(df.columns),
@@ -325,23 +321,23 @@ def export_tables(
 
 
 def run(session: requests.Session, browser_url: str, output_dir: Path) -> int:
-    """Risolve il link e sceglie cosa esportare in base al tipo di risorsa."""
-    logger.info("Risoluzione del link...")
+    """Resolve the link and choose what to export based on the resource type."""
+    logger.info("Resolving the link...")
     try:
         doc_id, resource_type, resource = resolve_target(session, browser_url)
 
         if resource_type == "table":
-            logger.info("Il link punta alla tabella '%s'.", resource.get("name"))
+            logger.info("The link points to table '%s'.", resource.get("name"))
             return export_tables(session, doc_id, [resource], output_dir)
 
         if resource_type == "page":
             page_name = resource.get("name") or resource["id"]
-            logger.info("Il link punta alla pagina '%s'.", page_name)
+            logger.info("The link points to page '%s'.", page_name)
             tables = list_page_tables(session, doc_id, resource["id"])
             if not tables:
-                logger.warning("Nessuna tabella trovata nella pagina '%s'.", page_name)
+                logger.warning("No tables found in page '%s'.", page_name)
                 return 0
-            logger.info("Tabelle trovate nella pagina: %d", len(tables))
+            logger.info("Tables found in the page: %d", len(tables))
             page_dir = output_dir / (safe_name(page_name) or resource["id"])
             for table in tables:
                 table["output_dir"] = page_dir
@@ -351,8 +347,8 @@ def run(session: requests.Session, browser_url: str, output_dir: Path) -> int:
         return 1
 
     logger.error(
-        "Il link punta a una risorsa di tipo '%s': serve il link di una "
-        "tabella (con l'ancora #Nome-Tabella_tuXXXX) o di una pagina.",
+        "The link points to a resource of type '%s': use the link of a "
+        "table (with the #Table-Name_tuXXXX anchor) or of a page.",
         resource_type,
     )
     return 1
@@ -361,16 +357,16 @@ def run(session: requests.Session, browser_url: str, output_dir: Path) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Esporta in CSV la tabella (o le tabelle di una pagina) "
-            "indicata da un link Coda / Superhuman Docs (export standard, "
-            "senza normalizzazione del contenuto delle celle)."
+            "Export to CSV the table (or the tables of a page) pointed to "
+            "by a Coda / Superhuman Docs link (standard export, cell "
+            "contents are not normalized)."
         )
     )
-    parser.add_argument("url", help="Link copiato dal browser (tabella o pagina).")
+    parser.add_argument("url", help="Link copied from the browser (table or page).")
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Cartella di destinazione dei CSV (default: ./output).",
+        help="Destination folder for the CSV files (default: ./output).",
     )
     return parser.parse_args()
 
