@@ -60,7 +60,8 @@ not commit it to Git. `.env` is excluded from Git via `.gitignore`.
 ## Usage
 
 ```bash
-python coda_export_v2.py "<link>"
+python coda_export_v2.py [--csv | --md] "<link>"
+python coda_export_v1.py [--csv | --md] "<link>"
 ```
 
 Example with the link of a table (copied from the browser, including the
@@ -68,13 +69,30 @@ Example with the link of a table (copied from the browser, including the
 
 ```bash
 python coda_export_v2.py "https://docs.superhuman.com/d/_dAbCDeFGH/Page_suXYZ#Table-Name_tuWXYZ12"
+python coda_export_v2.py --md "https://docs.superhuman.com/d/_dAbCDeFGH/Page_suXYZ#Table-Name_tuWXYZ12"
 ```
+
+### Output format (both scripts)
+
+| Flag | Output |
+|---|---|
+| `--csv` (default) | `.csv` file, `utf-8-sig` encoding |
+| `--md` | `.md` file, `utf-8` encoding: a `# <table name>` title followed by a Markdown table (`\|` escaped, empty cells left blank) |
+
+`--csv` and `--md` cannot be used together. Without any flag the export is
+CSV, as before.
+
+In the `.md` file the cell contents follow the script's rules (see
+[Which script to use](#which-script-to-use)). `v2` has one line per row;
+`v1` keeps the content as it comes from the API, with the only changes
+needed to keep the table valid: line breaks become `<br>` and `|` is
+escaped.
 
 The script resolves the link and decides by itself what to do:
 
 | The link points to… | What happens |
 |---|---|
-| **A table** | Exports that table to `output/<table_name>_<timestamp>.csv`. |
+| **A table** | Exports that table to `output/<table_name>_<timestamp>.csv` (or `.md` with `--md`). |
 | **A page** | Exports all its tables (`table` and `view`) to `output/<page_name>/`. Subpages are not included. |
 | **Anything else** (e.g. the whole doc) | Stops with an error message. |
 

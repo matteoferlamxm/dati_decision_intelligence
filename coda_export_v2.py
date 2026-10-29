@@ -1,7 +1,8 @@
 """
 
 Given a link copied from the browser (Superhuman Docs / Coda), exports to
-CSV the table it points to, or all the tables of the page it points to.
+CSV or Markdown the table it points to, or all the tables of the page it
+points to.
 
 Cells are flattened: multi-line text, lists and objects become a single
 line of text. For the export without modifications use coda_export_v1.py.
@@ -9,7 +10,10 @@ line of text. For the export without modifications use coda_export_v1.py.
 Only CODA_API_KEY is needed in the .env file (see .env.example).
 
 Usage:
-    python coda_export_v2.py "<link>" [--output-dir FOLDER]
+    python coda_export_v2.py [--csv | --md] "<link>" [--output-dir FOLDER]
+
+    --csv   export to .csv (default)
+    --md    export to .md (title + Markdown table)
 
 The link can point to:
     - a table (with the #Table-Name_tuXXXX anchor) -> exports that table
@@ -296,17 +300,17 @@ def safe_name(label: str) -> str:
     ).strip("_")
 
 
-def export_table_to_csv(
-    df: pd.DataFrame,
+def build_output_path(
     table_name: str,
     table_id: str,
     output_dir: Path,
     used_names: set[Path],
+    extension: str,
 ) -> Path:
     """
-    Save the DataFrame to <output_dir>/<table_name>_<timestamp>.csv.
-    If a table with the same name was already saved in this run, append the
-    ID so the file is not overwritten.
+    Build <output_dir>/<table_name>_<timestamp>.<extension>, creating the
+    folder. If a table with the same name was already saved in this run,
+    append the ID so the file is not overwritten.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -316,9 +320,69 @@ def export_table_to_csv(
     used_names.add(output_dir / base)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_path = output_dir / f"{base}_{timestamp}.csv"
+    return output_dir / f"{base}_{timestamp}.{extension}"
+
+
+def export_table_to_csv(
+    df: pd.DataFrame,
+    table_name: str,
+    table_id: str,
+    output_dir: Path,
+    used_names: set[Path],
+) -> Path:
+    """Save the DataFrame to <output_dir>/<table_name>_<timestamp>.csv."""
+    file_path = build_output_path(
+        table_name, table_id, output_dir, used_names, "csv"
+    )
     df.to_csv(file_path, index=False, encoding="utf-8-sig")
     return file_path
+
+
+def _markdown_cell(value: Any) -> str:
+    """Cell text safe for a Markdown table: no pipes, no line breaks, no NaN."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return ""
+    text = str(value).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    return text.replace("|", "\\|").strip()
+
+
+def dataframe_to_markdown(df: pd.DataFrame, title: str) -> str:
+    """
+    Render the DataFrame as a title plus a GitHub-flavoured Markdown table.
+    Written by hand to avoid extra dependencies (DataFrame.to_markdown needs
+    tabulate).
+    """
+    headers = [_markdown_cell(column) for column in df.columns]
+    lines = [
+        f"# {_markdown_cell(title)}",
+        "",
+        "| " + " | ".join(headers) + " |",
+        "|" + "|".join("---" for _ in headers) + "|",
+    ]
+    for record in df.itertuples(index=False, name=None):
+        lines.append("| " + " | ".join(_markdown_cell(v) for v in record) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def export_table_to_markdown(
+    df: pd.DataFrame,
+    table_name: str,
+    table_id: str,
+    output_dir: Path,
+    used_names: set[Path],
+) -> Path:
+    """Save the DataFrame to <output_dir>/<table_name>_<timestamp>.md."""
+    file_path = build_output_path(
+        table_name, table_id, output_dir, used_names, "md"
+    )
+    file_path.write_text(dataframe_to_markdown(df, table_name), encoding="utf-8")
+    return file_path
+
+
+EXPORTERS = {
+    "csv": export_table_to_csv,
+    "md": export_table_to_markdown,
+}
 
 
 def export_tables(
@@ -326,11 +390,14 @@ def export_tables(
     doc_id: str,
     tables: list[dict[str, Any]],
     output_dir: Path,
+    fmt: str = "csv",
 ) -> int:
     """
-    Download and save to CSV the given tables (dicts with at least id and
-    name). Returns 0 if everything went well, 1 if at least one table failed.
+    Download and save (as `fmt`: "csv" or "md") the given tables (dicts with
+    at least id and name). Returns 0 if everything went well, 1 if at least
+    one table failed.
     """
+    export_table = EXPORTERS[fmt]
     exit_code = 0
     used_names: set[Path] = set()
     for table in tables:
@@ -345,10 +412,12 @@ def export_tables(
 
         df = rows_to_dataframe(rows)
         if df.empty:
-            logger.warning("Table '%s' has no rows: CSV not created.", name)
+            logger.warning(
+                "Table '%s' has no rows: %s file not created.", name, fmt.upper()
+            )
             continue
 
-        file_path = export_table_to_csv(
+        file_path = export_table(
             df, name, table["id"], table.get("output_dir", output_dir), used_names
         )
         logger.info(
@@ -361,7 +430,12 @@ def export_tables(
     return exit_code
 
 
-def run(session: requests.Session, browser_url: str, output_dir: Path) -> int:
+def run(
+    session: requests.Session,
+    browser_url: str,
+    output_dir: Path,
+    fmt: str = "csv",
+) -> int:
     """Resolve the link and choose what to export based on the resource type."""
     logger.info("Resolving the link...")
     try:
@@ -369,7 +443,7 @@ def run(session: requests.Session, browser_url: str, output_dir: Path) -> int:
 
         if resource_type == "table":
             logger.info("The link points to table '%s'.", resource.get("name"))
-            return export_tables(session, doc_id, [resource], output_dir)
+            return export_tables(session, doc_id, [resource], output_dir, fmt)
 
         if resource_type == "page":
             page_name = resource.get("name") or resource["id"]
@@ -382,7 +456,7 @@ def run(session: requests.Session, browser_url: str, output_dir: Path) -> int:
             page_dir = output_dir / (safe_name(page_name) or resource["id"])
             for table in tables:
                 table["output_dir"] = page_dir
-            return export_tables(session, doc_id, tables, output_dir)
+            return export_tables(session, doc_id, tables, output_dir, fmt)
     except CodaApiError as exc:
         logger.error("%s", exc)
         return 1
@@ -398,15 +472,31 @@ def run(session: requests.Session, browser_url: str, output_dir: Path) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Export to CSV the table (or the tables of a page) pointed to "
-            "by a Coda / Superhuman Docs link."
+            "Export to CSV or Markdown the table (or the tables of a page) "
+            "pointed to by a Coda / Superhuman Docs link."
         )
     )
     parser.add_argument("url", help="Link copied from the browser (table or page).")
+    format_group = parser.add_mutually_exclusive_group()
+    format_group.add_argument(
+        "--csv",
+        dest="fmt",
+        action="store_const",
+        const="csv",
+        help="Export to .csv (default).",
+    )
+    format_group.add_argument(
+        "--md",
+        dest="fmt",
+        action="store_const",
+        const="md",
+        help="Export to .md (title + Markdown table).",
+    )
+    parser.set_defaults(fmt="csv")
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Destination folder for the CSV files (default: ./output).",
+        help="Destination folder for the exported files (default: ./output).",
     )
     return parser.parse_args()
 
@@ -419,7 +509,7 @@ def main() -> None:
         if args.output_dir
         else Path(__file__).resolve().parent / "output"
     )
-    sys.exit(run(session, args.url, output_dir))
+    sys.exit(run(session, args.url, output_dir, args.fmt))
 
 
 if __name__ == "__main__":
