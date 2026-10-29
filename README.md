@@ -1,8 +1,8 @@
 # Coda table export
 
 Local Python scripts that, given a **link** copied from the browser (Coda /
-Superhuman Docs) and your **API key**, download to CSV the table the link
-points to, or all the tables of the page the link points to.
+Superhuman Docs) and your **API key**, export the table the link points to
+(or all the tables of the page it points to) to CSV or Markdown.
 
 Everything runs on your computer: the only external communication is the
 direct calls to the official Coda API (`https://coda.io/apis/v1`).
@@ -15,14 +15,12 @@ dati_decision_intelligence/
 ├── .env               # YOUR API key (to be created, NOT versioned)
 ├── .gitignore
 ├── requirements.txt   # Python dependencies
-├── coda_export_v1.py  # Standard export: cells written as returned by the API
-├── coda_export_v2.py  # Export with cells flattened to a single line of text
-├── output/            # Generated CSV files
+├── coda_export_v1.py  # Table -> csv-raw / csv-clean / md
+├── coda_export_v2.py  # (experimental) whole page -> one .md with embedded Excel files
+├── import/            # (v2) .xlsx files and mapping.json
+├── output/            # Generated files
 └── README.md
 ```
-
-The two scripts share the same interface and only differ in how they handle
-cell contents (see [Which script to use](#which-script-to-use)).
 
 ## Requirements
 
@@ -32,7 +30,7 @@ cell contents (see [Which script to use](#which-script-to-use)).
 ## Setup
 
 ```bash
-cd /Users/matteo.ferlal/Desktop/dati_decision_intelligence
+cd .../Desktop/dati_decision_intelligence
 
 # Virtual environment and dependencies
 python3.15 -m venv venv
@@ -57,71 +55,100 @@ CODA_API_KEY=your_api_token_here
 ⚠️ The token has the same permissions as your user: do not share it and do
 not commit it to Git. `.env` is excluded from Git via `.gitignore`.
 
-## Usage
+## `coda_export_v1.py` — export a table
 
 ```bash
-python coda_export_v2.py [--csv | --md] "<link>"
-python coda_export_v1.py [--csv | --md] "<link>"
+python coda_export_v1.py [--csv-raw | --csv-clean | --md] "<link>" [--output-dir FOLDER]
 ```
 
 Example with the link of a table (copied from the browser, including the
 `#Table-Name_tuXXXX` anchor):
 
 ```bash
-python coda_export_v2.py "https://docs.superhuman.com/d/_dAbCDeFGH/Page_suXYZ#Table-Name_tuWXYZ12"
-python coda_export_v2.py --md "https://docs.superhuman.com/d/_dAbCDeFGH/Page_suXYZ#Table-Name_tuWXYZ12"
+python coda_export_v1.py "https://docs.superhuman.com/d/_dAbCDeFGH/Page_suXYZ#Table-Name_tuWXYZ12"
+python coda_export_v1.py --csv-clean "https://docs.superhuman.com/d/_dAbCDeFGH/Page_suXYZ#Table-Name_tuWXYZ12"
+python coda_export_v1.py --md "https://docs.superhuman.com/d/_dAbCDeFGH/Page_suXYZ#Table-Name_tuWXYZ12"
 ```
 
-### Output format (both scripts)
+### Output formats
 
-| Flag | Output |
-|---|---|
-| `--csv` (default) | `.csv` file, `utf-8-sig` encoding |
-| `--md` | `.md` file, `utf-8` encoding: a `# <table name>` title followed by a Markdown table (`\|` escaped, empty cells left blank) |
+| Flag | File | Cell contents |
+|---|---|---|
+| `--csv-raw` (default) | `<table>_csv-raw_<timestamp>.csv` | As returned by the API: embedded line breaks, lists and objects are written as they are |
+| `--csv-clean` | `<table>_csv-clean_<timestamp>.csv` | Flattened: every table row takes a single line of text |
+| `--md` | `<table>_<timestamp>.md` | `# <table name>` title and a Markdown table; contents as in `--csv-raw`, with line breaks written as `<br>` and `\|` escaped so the table stays valid |
 
-`--csv` and `--md` cannot be used together. Without any flag the export is
-CSV, as before.
+The three flags are mutually exclusive; without any flag the export is
+`--csv-raw`.
 
-In the `.md` file the cell contents follow the script's rules (see
-[Which script to use](#which-script-to-use)). `v2` has one line per row;
-`v1` keeps the content as it comes from the API, with the only changes
-needed to keep the table valid: line breaks become `<br>` and `|` is
-escaped.
+The CSV files use the `utf-8-sig` encoding (they open directly in Excel with
+accented characters), the `.md` file uses `utf-8`.
 
-The script resolves the link and decides by itself what to do:
+How `--csv-clean` flattens the cells:
+
+| On Coda | `--csv-raw` | `--csv-clean` |
+|---|---|---|
+| `- first point`<br>`- second point` | same text on two lines | `- first point; - second point` |
+| multi-select `Option A`, `Option B` | `['Option A', 'Option B']` | `Option A; Option B` |
+| a person / attachment / reference | a Python dict | name, email or url |
+
+If a line ends with `:` the following text is attached with a space instead
+of the separator (`Category: item1; item2`).
+
+### What the link can point to
 
 | The link points to… | What happens |
 |---|---|
-| **A table** | Exports that table to `output/<table_name>_<timestamp>.csv` (or `.md` with `--md`). |
+| **A table** | Exports that table to `output/`. |
 | **A page** | Exports all its tables (`table` and `view`) to `output/<page_name>/`. Subpages are not included. |
 | **Anything else** (e.g. the whole doc) | Stops with an error message. |
-
-The only option is `--output-dir FOLDER` (default `./output`).
 
 If two tables have the same name within the same export, the table ID is
 appended to the file name so that they do not overwrite each other.
 
-## Which script to use
+## `coda_export_v2.py` — whole page with embedded Excel files (experimental)
 
-| | `coda_export_v1.py` | `coda_export_v2.py` |
-|---|---|---|
-| Cells with multi-line text | written with the original line breaks | flattened to one line |
-| Lists (multi-select, lookup) | written as a Python list | joined with `; ` |
-| Objects (person, attachment, reference) | written as a Python dict | reduced to name/email/url |
+For tables whose cells refer to other sections of the page ("see Country
+Weights below"), and those sections link to a spreadsheet. Given the link of
+a **table**, the script:
 
-With `v2` each table row takes up a single line of text in the CSV, so the
-file stays readable even when opened as plain text. Example:
+1. exports the **whole page** the table lives in, as Markdown, keeping the
+   order of text and tables;
+2. finds the "see X below" / "vedi X sotto" references inside the table cells
+   and the section with that title;
+3. looks for the spreadsheet linked in that section among the `.xlsx` files
+   in `import/` and writes it **inside the cell** that makes the reference,
+   as an HTML table (table inside table);
+4. removes the links to the original files, keeping only their label;
+5. saves a single `output/<table>_<timestamp>.md`.
 
-| On Coda | `v1` | `v2` |
-|---|---|---|
-| `- first point`<br>`- second point` | same text on two lines | `- first point; - second point` |
-| multi-select `Option A`, `Option B` | `['Option A', 'Option B']` | `Option A; Option B` |
+```bash
+python coda_export_v2.py "<table link>" [--import-dir import] [--output-dir output]
+```
 
-With `v2`, if a line ends with `:` the following text is attached with a
-space instead of the separator (`Category: item1; item2`). With both
-scripts, pandas wraps in quotes the fields that contain commas or line
-breaks, so the column structure stays correct for Excel, Google Sheets or
-pandas.
+The spreadsheets linked from the page are private, so they are not
+downloaded: put them in `import/` and map the file ID (the part after `/d/`
+in the Google link) to the file name in `import/mapping.json`:
+
+```json
+{
+  "1-Ubu2JUC0y41_AOs9wJfNe_9ZFGdFd2z": "meta_licensed_country_renewal_2026.xlsx"
+}
+```
+
+A link without an entry is not matched automatically (a page can have
+several): the cell gets the placeholder `[file not available: <label>]` and
+the log prints the line to add to `mapping.json`.
+
+Notes:
+
+- Numbers are written as Excel displays them (the cell's number format);
+  where the format is *General*, non-integers get 2 decimals.
+- `$` is written as `&#36;` inside the embedded table: Markdown viewers with
+  math support (VS Code, Obsidian) would otherwise read `$ ... $` as a
+  formula and break the outer table.
+- The script warns if the exported table has a different number of rows than
+  the one reported by the API (possible truncation).
 
 ## Technical details
 
@@ -136,12 +163,13 @@ pandas.
   tables.
 - **Rate limiting**: on `429` and `5xx` it retries with exponential backoff
   (honoring `Retry-After`), up to 5 attempts.
-- **Columns**: rows are downloaded with `useColumnNames=true`, so the CSV
-  has the readable column names. Two columns are appended at the end:
+- **Columns**: rows are downloaded with `useColumnNames=true`, so the files
+  have the readable column names. Two columns are appended at the end:
   `_coda_row_id` (stable row ID on Coda) and `_coda_row_index` (position of
   the row at export time).
-- **CSV encoding**: `utf-8-sig`, can be opened directly in Excel with
-  accented characters.
+- **Page export (v2)**: `POST /pages/{id}/export` with `outputFormat:
+  markdown`, then the status URL is polled until the download link is ready.
+  The text is decoded as UTF-8 (the download arrives mis-decoded).
 
 ## Troubleshooting
 
@@ -152,6 +180,8 @@ pandas.
   doc, or the link was copied incompletely.
 - **"The link points to a resource of type '…'"** → use the link of a
   table (with the `#Table-Name_tuXXXX` anchor) or of a page, not the one of
-  the whole document.
+  the whole document. v2 only accepts the link of a table.
 - **Repeated 429 errors** → too many calls in a short time: the script
   already retries on its own; if it persists, wait a few minutes.
+- **v2: `[file not available: ...]` in a cell** → add the .xlsx file to
+  `import/` and its entry to `import/mapping.json`.

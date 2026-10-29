@@ -1,21 +1,21 @@
 """
-Given a link copied from the browser (Superhuman Docs / Coda), exports to
-CSV or Markdown the table it points to, or all the tables of the page it
-points to.
+Given a link copied from the browser (Superhuman Docs / Coda), exports the
+table it points to, or all the tables of the page it points to.
 
-"Standard" variant: cell contents are NOT modified. Every value returned by
-the API is written as is (embedded newlines, lists and dicts included). With
---md the only adjustments needed to keep the Markdown table valid are: line
-breaks become <br> and "|" is escaped. For a single line of text per table
-row use coda_export_v2.py.
+Output formats (one flag at most):
+    --csv-raw    CSV, cell contents NOT modified: every value returned by the
+                 API is written as is (embedded newlines, lists and dicts
+                 included). Default.
+    --csv-clean  CSV, cells flattened: multi-line text, lists and objects
+                 become a single line of text.
+    --md         Markdown: a title and the table, cell contents as in
+                 --csv-raw. The only adjustments needed to keep the table
+                 valid are: line breaks become <br> and "|" is escaped.
 
 Only CODA_API_KEY is needed in the .env file (see .env.example).
 
 Usage:
-    python coda_export_v1.py [--csv | --md] "<link>" [--output-dir FOLDER]
-
-    --csv   export to .csv (default)
-    --md    export to .md (title + Markdown table)
+    python coda_export_v1.py [--csv-raw | --csv-clean | --md] "<link>" [--output-dir FOLDER]
 
 The link can point to:
     - a table (with the #Table-Name_tuXXXX anchor) -> exports that table
@@ -232,15 +232,66 @@ def fetch_table_rows(
     return rows
 
 
-def rows_to_dataframe(rows: Iterable[dict[str, Any]]) -> pd.DataFrame:
+# Used by csv-clean: multi-line values and lists are flattened to a single
+# line of text. ";" is used because pandas.to_csv wraps in quotes the fields
+# containing a comma, and this way the CSV also stays readable at a glance.
+FLATTEN_SEPARATOR = "; "
+
+
+def _join_flattened(items: list[str]) -> str:
+    """
+    Join with FLATTEN_SEPARATOR; if an item ends with ":" (it introduces a
+    list) the next one is attached with a space:
+    "Category: a; b" instead of "Category:; a; b".
+    """
+    if not items:
+        return ""
+    result = items[0]
+    for item in items[1:]:
+        result += (" " if result.endswith(":") else FLATTEN_SEPARATOR) + item
+    return result
+
+
+def sanitize_cell_value(value: Any) -> Any:
+    """
+    Normalize a cell so it takes a single line in the CSV: dicts (person,
+    attachment, reference) reduced to name/email/url, lists (multi-select,
+    lookup) and multi-line texts joined with FLATTEN_SEPARATOR.
+    Simple values are left unchanged.
+    """
+    if isinstance(value, dict):
+        for key in ("name", "email", "url", "display"):
+            if value.get(key):
+                return str(value[key])
+        return str(value)
+
+    if isinstance(value, (list, tuple)):
+        return _join_flattened([str(sanitize_cell_value(v)) for v in value])
+
+    if isinstance(value, str) and ("\n" in value or "\r" in value):
+        lines = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        return _join_flattened([line.strip() for line in lines if line.strip()])
+
+    return value
+
+
+def rows_to_dataframe(
+    rows: Iterable[dict[str, Any]], clean: bool = False
+) -> pd.DataFrame:
     """
     Coda rows -> DataFrame, with the _coda_row_* metadata columns at the end.
-    No normalization: values (including lists or dicts) go to pandas as they
-    come from the API, and to_csv decides how to write them.
+    By default values (including lists or dicts) go to pandas as they come
+    from the API. With clean=True every cell goes through
+    sanitize_cell_value first.
     """
     records = []
     for row in rows:
-        record = dict(row.get("values", {}))
+        values = row.get("values", {})
+        record = (
+            {column: sanitize_cell_value(v) for column, v in values.items()}
+            if clean
+            else dict(values)
+        )
         record["_coda_row_id"] = row.get("id")
         record["_coda_row_index"] = row.get("index")
         records.append(record)
@@ -266,11 +317,12 @@ def build_output_path(
     output_dir: Path,
     used_names: set[Path],
     extension: str,
+    suffix: str = "",
 ) -> Path:
     """
-    Build <output_dir>/<table_name>_<timestamp>.<extension>, creating the
-    folder. If a table with the same name was already saved in this run,
-    append the ID so the file is not overwritten.
+    Build <output_dir>/<table_name>[_<suffix>]_<timestamp>.<extension>,
+    creating the folder. If a table with the same name was already saved in
+    this run, append the ID so the file is not overwritten.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -280,7 +332,8 @@ def build_output_path(
     used_names.add(output_dir / base)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return output_dir / f"{base}_{timestamp}.{extension}"
+    parts = [base] + ([suffix] if suffix else []) + [timestamp]
+    return output_dir / f"{'_'.join(parts)}.{extension}"
 
 
 def export_table_to_csv(
@@ -289,10 +342,11 @@ def export_table_to_csv(
     table_id: str,
     output_dir: Path,
     used_names: set[Path],
+    suffix: str = "",
 ) -> Path:
-    """Save the DataFrame to <output_dir>/<table_name>_<timestamp>.csv."""
+    """Save the DataFrame to <output_dir>/<table_name>[_<suffix>]_<timestamp>.csv."""
     file_path = build_output_path(
-        table_name, table_id, output_dir, used_names, "csv"
+        table_name, table_id, output_dir, used_names, "csv", suffix
     )
     df.to_csv(file_path, index=False, encoding="utf-8-sig")
     return file_path
@@ -339,18 +393,24 @@ def export_table_to_markdown(
     table_id: str,
     output_dir: Path,
     used_names: set[Path],
+    suffix: str = "",
 ) -> Path:
-    """Save the DataFrame to <output_dir>/<table_name>_<timestamp>.md."""
+    """Save the DataFrame to <output_dir>/<table_name>[_<suffix>]_<timestamp>.md."""
     file_path = build_output_path(
-        table_name, table_id, output_dir, used_names, "md"
+        table_name, table_id, output_dir, used_names, "md", suffix
     )
     file_path.write_text(dataframe_to_markdown(df, table_name), encoding="utf-8")
     return file_path
 
 
-EXPORTERS = {
-    "csv": export_table_to_csv,
-    "md": export_table_to_markdown,
+DEFAULT_FORMAT = "csv-raw"
+
+# format -> (writer, file name suffix, flatten the cells?)
+# The suffix tells the two CSV files apart; the .md is told apart by extension.
+FORMATS = {
+    "csv-raw": (export_table_to_csv, "csv-raw", False),
+    "csv-clean": (export_table_to_csv, "csv-clean", True),
+    "md": (export_table_to_markdown, "", False),
 }
 
 
@@ -359,14 +419,14 @@ def export_tables(
     doc_id: str,
     tables: list[dict[str, Any]],
     output_dir: Path,
-    fmt: str = "csv",
+    fmt: str = DEFAULT_FORMAT,
 ) -> int:
     """
-    Download and save (as `fmt`: "csv" or "md") the given tables (dicts with
+    Download and save (as `fmt`, one of FORMATS) the given tables (dicts with
     at least id and name). Returns 0 if everything went well, 1 if at least
     one table failed.
     """
-    export_table = EXPORTERS[fmt]
+    export_table, suffix, clean = FORMATS[fmt]
     exit_code = 0
     used_names: set[Path] = set()
     for table in tables:
@@ -379,15 +439,18 @@ def export_tables(
             exit_code = 1
             continue
 
-        df = rows_to_dataframe(rows)
+        df = rows_to_dataframe(rows, clean=clean)
         if df.empty:
-            logger.warning(
-                "Table '%s' has no rows: %s file not created.", name, fmt.upper()
-            )
+            logger.warning("Table '%s' has no rows: %s file not created.", name, fmt)
             continue
 
         file_path = export_table(
-            df, name, table["id"], table.get("output_dir", output_dir), used_names
+            df,
+            name,
+            table["id"],
+            table.get("output_dir", output_dir),
+            used_names,
+            suffix,
         )
         logger.info(
             "Table '%s' exported: %d rows, %d columns -> %s",
@@ -403,7 +466,7 @@ def run(
     session: requests.Session,
     browser_url: str,
     output_dir: Path,
-    fmt: str = "csv",
+    fmt: str = DEFAULT_FORMAT,
 ) -> int:
     """Resolve the link and choose what to export based on the resource type."""
     logger.info("Resolving the link...")
@@ -441,28 +504,34 @@ def run(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Export to CSV or Markdown the table (or the tables of a page) "
-            "pointed to by a Coda / Superhuman Docs link (standard export, "
-            "cell contents are not normalized)."
+            "Export the table (or the tables of a page) pointed to by a "
+            "Coda / Superhuman Docs link to CSV or Markdown."
         )
     )
     parser.add_argument("url", help="Link copied from the browser (table or page).")
     format_group = parser.add_mutually_exclusive_group()
     format_group.add_argument(
-        "--csv",
-        dest="fmt",
+        "--csv-raw",
+        dest="format",
         action="store_const",
-        const="csv",
-        help="Export to .csv (default).",
+        const="csv-raw",
+        help="CSV, cells as returned by the API (default).",
+    )
+    format_group.add_argument(
+        "--csv-clean",
+        dest="format",
+        action="store_const",
+        const="csv-clean",
+        help="CSV, cells flattened to one line.",
     )
     format_group.add_argument(
         "--md",
-        dest="fmt",
+        dest="format",
         action="store_const",
         const="md",
-        help="Export to .md (title + Markdown table).",
+        help="Markdown: title and table.",
     )
-    parser.set_defaults(fmt="csv")
+    parser.set_defaults(format=DEFAULT_FORMAT)
     parser.add_argument(
         "--output-dir",
         default=None,
@@ -479,7 +548,7 @@ def main() -> None:
         if args.output_dir
         else Path(__file__).resolve().parent / "output"
     )
-    sys.exit(run(session, args.url, output_dir, args.fmt))
+    sys.exit(run(session, args.url, output_dir, args.format))
 
 
 if __name__ == "__main__":
